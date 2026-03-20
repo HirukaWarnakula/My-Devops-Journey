@@ -1,33 +1,71 @@
+```markdown
 # Incident Report: Apache Port 6400 Connectivity Fix
 
 ## 🛠 Problem Description
-The Apache service on `stapp01` was unreachable on port **6400**. 
-Initial diagnostics showed the service was in a `failed` state.
+The Apache service on **App Server 1 (`stapp01`)** was unreachable on port **6400**.  
+Initial diagnostics indicated that the service was in a `failed` state and could not bind to the network interface.
+
+## 📊 Troubleshooting Workflow
+```mermaid
+graph TD
+    A[Start: Port 6400 Unreachable] --> B{Service Status?}
+    B -- Failed --> C[Check logs: Address already in use]
+    C --> D[Identify Conflict: ss -tulpn]
+    D --> E[Found Sendmail on 6400]
+    E --> F[Action: Stop/Disable Sendmail]
+    F --> G[Action: Update Apache Listen 6400]
+    G --> H[Action: Start/Enable httpd]
+    H --> I[Result: HTTP 403 - Success!]
+```
 
 ## 🔍 Diagnostics & Discovery
-I used the following tools to identify the root cause:
-1. systemctl status httpd: Confirmed the service failed with error `(98)Address already in use`.
-2. ss -tulpn: Identified that `sendmail` (PID 16207) was already listening on port 6400.
+I used the following Linux networking tools to identify the root cause:
 
-## The Fix
+1. **`systemctl status httpd`**: Confirmed the service failed to start with the specific error:  
+   `(98)Address already in use: AH00072: make_sock: could not bind to address [::]:6400`
+2. **`ss -tulpn`**: Identified that the `sendmail` service (PID 16207) was already listening on port 6400, preventing Apache from starting.
+
+---
+
+## 🚀 The Fix
 
 ### 1. Evicting the Port Conflict
-First, I had to stop the service occupying our target port:
+To free up the port for Apache, I stopped the conflicting service and ensured it would not restart on the next boot:
+
 ```bash
+# Stop and disable the conflicting service
 sudo systemctl stop sendmail
 sudo systemctl disable sendmail
 
-## 2.Securing with Firewall(iptables)
+# Force kill the process if it remains active
+sudo kill -9 16207
+```
 
-Instead of disabling the firewall , I added a specific "Security Setting" to allow traffic while keeping the system protected:
+### 2. Securing with Firewall (iptables)
+Instead of disabling the firewall (which would compromise security), I added a specific rule to allow traffic on port 6400 while keeping the system protected.
 
-   #Added above the REJECT lines in /etc/sysconfig/iptables:
--A INPUT -p tcp -m state --state NEW tcp --dport 6400 -j ACCEPT
+**File:** `/etc/sysconfig/iptables`  
+**Change:** Added the following line **above** the global `REJECT` rules:
 
-Key Lessons I Learned 
+```text
+-A INPUT -p tcp -m state --state NEW -m tcp --dport 6400 -j ACCEPT
+```
 
-* Port Ownership:Always  check ss or netstat first .Multiple Services Cannot bind to the same      IP/Port combination.
-*Firewall Persistence :Disabling a firewall is a "quick fix" but not a proffesional one. 
-*Syntax Matters :iptable requires a blank newline at the end of the config file to parse correctly .
-*Fleet Health: In a cluster, checking one node isn't enough. Use a for loop to verify the whole fleet.
+### 3. Service Persistence
+Finally, I restarted and enabled the required services to ensure the fix survives a system reboot:
+
+```bash
+sudo systemctl restart iptables && sudo systemctl enable iptables
+sudo systemctl start httpd && sudo systemctl enable httpd
+```
+
+---
+
+## 💡 Key Lessons Learned
+
+* **Port Ownership**: Always check `ss` or `netstat` first. Multiple services cannot bind to the same IP/Port combination simultaneously.
+* **Firewall Persistence**: Disabling a firewall is a "quick fix" but not a professional one. Real-world DevOps requires writing granular rules.
+* **Syntax Matters**: `iptables` requires a blank newline at the end of the configuration file to parse correctly.
+* **Fleet Health**: In a cluster environment, checking one node is not enough. Always verify connectivity across the entire fleet (`stapp01`, `stapp02`, `stapp03`) before finalizing a task.
+```
 
